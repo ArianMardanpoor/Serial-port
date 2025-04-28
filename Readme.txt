@@ -1,1 +1,0 @@
-requirment = ttkbootstrap
