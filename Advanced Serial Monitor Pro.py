@@ -10,6 +10,10 @@ import time
 import ttkbootstrap as tbs
 import os
 from datetime import datetime
+import gc
+import queue
+import traceback
+
 
 class Logger:
     def __init__(self):
@@ -18,7 +22,6 @@ class Logger:
     
     def start_logging(self, file_path=None):
         if file_path is None:
-            # Create a default log filename with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             log_dir = "logs"
             os.makedirs(log_dir, exist_ok=True)
@@ -26,7 +29,7 @@ class Logger:
         
         try:
             self.log_file = open(file_path, 'w')
-            self.log_file.write("Timestamp,Channel,Metric,Value\n")  # CSV header
+            self.log_file.write("Timestamp,Channel,Metric,Value\n")
             self.is_logging = True
             return True, file_path
         except Exception as e:
@@ -36,7 +39,7 @@ class Logger:
         if self.is_logging and self.log_file:
             try:
                 self.log_file.write(f"{timestamp},{channel},{metric},{value}\n")
-                self.log_file.flush()  # Ensure data is written immediately
+                self.log_file.flush() 
             except Exception as e:
                 print(f"Error writing to log: {e}")
     
@@ -50,94 +53,258 @@ class SerialCommunicationHandler:
         self.ser = serial.Serial(port, 115200, timeout=1)
         self.last_read_time = time.time()
         self.read_interval = 0.05 
+        self.buffer = bytearray()
     
     def send_channel_config(self, channel, method, value):
         try:
             channel_map = {'CH1': 1, 'CH2': 2, 'CH3': 3}
-            method_map = {'R': 1, 'I': 2, 'P': 3}
-            
-            value = max(0, min(int(value), 65535))
-            high_byte = (value >> 8) & 0xFF
-            low_byte = value & 0xFF
-            
+            method_map = {'I': 1, 'R': 2, 'P': 3}
+
+            if channel not in channel_map or method not in method_map:
+                print(f"[ERROR] Invalid channel or method: {channel}, {method}")
+                return False
+
+            try:
+                value = float(value)
+            except ValueError:
+                print("[ERROR] Value is not a valid float")
+                return False
+
+            int_value = max(0, min(int(value), 65535))
+            high_byte = (int_value >> 8) & 0xFF
+            low_byte = int_value & 0xFF
             packet = bytearray([
-                channel_map.get(channel, 0),
-                method_map.get(method, 0),
+                ord('<'),
+                ord(':'),
+                channel_map[channel],
+                ord(':'),             
+                method_map[method],  
+                ord(':'),            
                 high_byte,
-                low_byte
+                low_byte,
+                ord(':'),
+                ord('>')
             ])
-            
+
+            print(f"[DEBUG] Sending packet: {list(packet)}") 
+
             self.ser.write(packet)
-            response = self.ser.readline().decode('utf-8').strip()
-            return response == "OK"
-        
+            print(packet)
+            return True
+
         except Exception as e:
-            print(f"Error sending channel config: {e}")
+            print(f"[ERROR] Exception during send: {e}")
             return False
-    def create_notification(self):
-        try:
-            if self.ser.in_waiting > 0:
-                str_line = self.ser.readline().decode('utf-8', errors="ignore").strip()
-                if not str_line:
-                    return {}
-            else:
-                return {}
-            if str_line[8]:
-                messagebox.INFO("Channel 1 is working...")
-            if str_line[18]:
-                messagebox.INFO("Channel 2 is working...")
-            if str_line[8]:
-                messagebox.INFO("Channel 3 is working...")
-            if str_line[33]:
-                messagebox.WARNING("Temperture is too high....")
-        except:
-            pass
+
     def get_data(self):
         try:
             if self.ser.in_waiting > 0:
-                str_line = self.ser.readline().decode('utf-8', errors="ignore").strip()
-                if not str_line:
-                    return {}
+
+                new_data = self.ser.read(self.ser.in_waiting)
+                self.buffer.extend(new_data)
+                
+
+                result = None
+                while True:
+                    start = self.buffer.find(b'<:')
+                    end = self.buffer.find(b':>', start)
+                    
+                    if start != -1 and end != -1 and end > start:
+                        line_end = end + 2
+                        raw_data = self.buffer[start:line_end]
+                        self.buffer = self.buffer[line_end:] 
+                        
+
+                        str_line = raw_data.decode('utf-8', errors="ignore").strip()
+                        print(f"Received data: {str_line}")
+                        
+                        if not str_line:
+                            continue  
+                        
+                        elapsed_time = time.time()
+                        result = {"time": elapsed_time}
+                        for channel in ["CH1", "CH2", "CH3"]:
+                            result[channel] = {
+                                "V": 0,
+                                "I": 0,
+                                "R": 0,
+                                "P": 0
+                            }
+
+                        G1 = 0
+                        G2 = 0
+                        G3 = 0
+
+                        try:
+                            if len(raw_data) > 3:
+                                V1_val = raw_data[2] * 256 + raw_data[3]
+                                result["CH1"]["V"] = V1_val
+                        except (IndexError, TypeError) as e:
+                            print(f"Error reading CH1 V: {e}")
+                            
+                        try:
+                            if len(raw_data) > 6:
+                                I1_val = raw_data[5] * 256 + raw_data[6]
+                                result["CH1"]["I"] = I1_val
+                        except (IndexError, TypeError) as e:
+                            print(f"Error reading CH1 I: {e}")
+                        
+                        try:
+                            if len(raw_data) > 10:
+                                G1 = raw_data[9] * 256 + raw_data[10]
+                        except (IndexError, TypeError) as e:
+                            print(f"Error reading CH1 G: {e}")
+                            G1 = 0
+                            
+                        if result["CH1"]["I"] != 0:
+                            result["CH1"]["R"] = result["CH1"]["V"] / result["CH1"]["I"]
+                        else:
+                            result["CH1"]["R"] = 0
+                        result["CH1"]["P"] = result["CH1"]["V"] * result["CH1"]["I"]
+                            
+                        try:
+                            if len(raw_data) > 8:
+                                mode = raw_data[8]
+                                if mode == 1:
+                                    result["CH1"]["I"] = G1
+                                elif mode == 2:
+                                    result["CH1"]["R"] = G1
+                                elif mode == 3:
+                                    result["CH1"]["P"] = G1
+                        except (IndexError, TypeError) as e:
+                            print(f"Error reading CH1 mode: {e}")
+                        
+                        try:
+                            if len(raw_data) > 13:
+                                V2_val = raw_data[12] * 256 + raw_data[13]
+                                result["CH2"]["V"] = V2_val
+                        except (IndexError, TypeError) as e:
+                            print(f"Error reading CH2 V: {e}")
+                            
+                        try:
+                            if len(raw_data) > 16:
+                                I2_val = raw_data[15] * 256 + raw_data[16]
+                                result["CH2"]["I"] = I2_val
+                        except (IndexError, TypeError) as e:
+                            print(f"Error reading CH2 I: {e}")
+                            
+                        try:
+                            if len(raw_data) > 20:
+                                G2 = raw_data[19] * 256 + raw_data[20]
+                        except (IndexError, TypeError, ZeroDivisionError) as e:
+                            print(f"Error reading CH2 G: {e}")
+                            G2 = 0
+
+                        if result["CH2"]["I"] != 0:
+                            result["CH2"]["R"] = result["CH2"]["V"] / result["CH2"]["I"]
+                        else:
+                            result["CH2"]["R"] = 0
+                        result["CH2"]["P"] = result["CH2"]["V"] * result["CH2"]["I"]
+                            
+                        try:
+                            if len(raw_data) > 18:
+                                mode = raw_data[18]
+                                if mode == 1:
+                                    result["CH2"]["I"] = G2
+                                elif mode == 2:
+                                    result["CH2"]["R"] = G2
+                                elif mode == 3:
+                                    result["CH2"]["P"] = G2
+                        except (IndexError, TypeError) as e:
+                            print(f"Error reading CH2 mode: {e}")
+                        
+                        try:
+                            if len(raw_data) > 23:
+                                V3_val = raw_data[22] * 256 + raw_data[23] 
+                                result["CH3"]["V"] = V3_val
+                        except (IndexError, TypeError) as e:
+                            print(f"Error reading CH3 V: {e}")
+
+                        try:
+                            if len(raw_data) > 26:
+                                I3_val = raw_data[25] * 256 + raw_data[26]
+                                result["CH3"]["I"] = I3_val
+                        except (IndexError, TypeError) as e:
+                            print(f"Error reading CH3 I: {e}")
+                            
+                        try:
+                            if len(raw_data) > 30:
+                                G3 = raw_data[29] * 256 + raw_data[30]
+                        except (IndexError, TypeError, ZeroDivisionError) as e:
+                            print(f"Error reading CH3 G: {e}")
+                            G3 = 0
+                            
+                        if result["CH3"]["I"] != 0:
+                            result["CH3"]["R"] = result["CH3"]["V"] / result["CH3"]["I"]
+                        else:
+                            result["CH3"]["R"] = 0
+                        result["CH3"]["P"] = result["CH3"]["V"] * result["CH3"]["I"]
+                            
+                        try:
+                            if len(raw_data) > 28:
+                                mode = raw_data[28]
+                                if mode == 1:
+                                    result["CH3"]["I"] = G3
+                                elif mode == 2:
+                                    result["CH3"]["R"] = G3 
+                                elif mode == 3:
+                                    result["CH3"]["P"] = G3
+                        except (IndexError, TypeError) as e:
+                            print(f"Error reading CH3 mode: {e}")
+                    else:
+                        break
+                        
+                if len(self.buffer) > 1024:
+                    self.buffer = self.buffer[-100:]
+                
+                return result if result else {}
             else:
                 return {}
-
-            values = []
-            elapsed_time = time.time()
-            values.append(elapsed_time)
-
-            if len(str_line) >= 11:
-                if str_line[1] == ':' and len(str_line) > 3:
-                    V = ord(str_line[2]) * 256 + ord(str_line[3])
-                    values.append(V)
-                else:
-                    values.append(0)
-                
-                if len(str_line) > 6 and str_line[4] == ':':
-                    I = ord(str_line[5]) * 256 + ord(str_line[6])
-                    values.append(I)
-                else:
-                    values.append(0)
-                
-                if len(str_line) > 10 and str_line[8] == ':':
-                    G = ord(str_line[9]) * 256 + ord(str_line[10])
-                    R = 1 / G if G != 0 else 0
-                    values.append(R)
-                else:
-                    values.append(0)
-                
-                try:
-                    P = values[1] * values[2]
-                except Exception:
-                    P = 0
-                values.append(P)
-            else:
-                values.extend([0, 0, 0, 0])
-
-            keys = ["time", "V", "I", "R", "P"]
-            return dict(zip(keys, values))
         except Exception as e:
             print(f"Error receiving data: {e}")
             return {}
+    def create_notification(self):
+        try:
+            bytes_to_read = min(35, self.ser.in_waiting) 
+            new_data = self.ser.read(bytes_to_read)
+                
+            temp_buffer = bytearray()
+            temp_buffer.extend(new_data)
+                
+            if b'\n' in temp_buffer:
+                line_end = temp_buffer.find(b'\n')
+                str_line = temp_buffer[:line_end].decode('utf-8', errors="ignore").strip()
+            
+            if len(str_line) <= 34:
+                return
+                
+            try:
+                Flags = ord(str_line[34])
+                Flagsbyte = format(Flags, '08b')
+                
+
+                if len(Flagsbyte) >= 8:
+                    if Flagsbyte[0] == '1':
+                        messagebox.showinfo("Error: Temperature exceeded 70°C.\
+                                \nSystem shut down to prevent damage.\
+                                \nPlease restart manually after cooling.")
+                    
+                    if Flagsbyte[1] == '1':
+                        messagebox.showinfo("Error: Channel 1 current limit exceeded.\
+                                \nMaximum allowed current is 1A.")
+                    
+                    if Flagsbyte[2] == '1':
+                        messagebox.showinfo("Error: Channel 2 current limit exceeded.\
+                                \nMaximum allowed current is 1A.")
+                    
+                    if Flagsbyte[3] == '1':
+                        messagebox.showinfo("Error: Channel 3 current limit exceeded.\
+                                \nMaximum allowed current is 1A.")
+            except (IndexError, TypeError, ValueError) as e:
+                print(f"Error processing flags: {e}")
+                
+        except Exception as e:
+            print(f"Error in create_notification: {e}")
 
     def close(self):
         if self.ser.is_open:
@@ -148,10 +315,18 @@ class AdvancedSerialMonitor:
         self.root = root
         self.root.title("🚀 Advanced Serial Monitor Pro")
         self.root.geometry("1000x600")
+        self.data_queue = queue.Queue()
+        self.running = False
+        self.data_thread = None
+        self.plotting_thread = None
         try:
             self.root.iconbitmap("serial_port.ico")
         except:
             pass
+        self.MAX_POINTS = 200 
+        self.data_buffer = {f'CH{i}': {} for i in range(1, 4)}
+        self.cleanup_interval = 10000
+        self.last_cleanup = time.time()
         self.FONT = ("Segoe UI", 11, "bold")
         self.serial_connection = None
         self.connection_status = False
@@ -181,8 +356,6 @@ class AdvancedSerialMonitor:
         self.plot_windows = {}
         self.anim = None
         self.start_time = None
-        
-        # New attributes for enhanced functionality
         self.logger = Logger()
         self.is_plotting_paused = False
         self.buffered_data = []
@@ -191,6 +364,9 @@ class AdvancedSerialMonitor:
         self.root.protocol("WM_DELETE_WINDOW", self.close)
     
     def setup_ui(self):
+        plt.rcParams['figure.autolayout'] = False
+        plt.rcParams['toolbar'] = 'None'  
+        
         port_frame = ttk.LabelFrame(self.root, text=" 🔌 Serial Port ", padding=(10, 5))
         port_frame.grid(row=0, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
         
@@ -286,7 +462,7 @@ class AdvancedSerialMonitor:
             variable=self.plot_settings['update_interval']
         ).grid(row=len(controls)+1, column=0, sticky='ew')
         
-        # Add buttons for control
+
         button_frame = ttk.Frame(plot_control_frame)
         button_frame.grid(row=len(controls)+3, column=0, sticky='ew', pady=5)
         
@@ -296,7 +472,6 @@ class AdvancedSerialMonitor:
             command=self.start_plotting
         ).grid(row=0, column=0, sticky='ew', padx=2)
         
-        # Add Stop/Pause button
         self.pause_button = ttk.Button(
             button_frame,
             text="⏸️ Pause",
@@ -304,8 +479,6 @@ class AdvancedSerialMonitor:
             state="disabled"
         )
         self.pause_button.grid(row=0, column=1, sticky='ew', padx=2)
-        
-        # Add Continue/Resume button
         self.resume_button = ttk.Button(
             button_frame,
             text="▶️ Resume",
@@ -316,7 +489,6 @@ class AdvancedSerialMonitor:
     
     def toggle_logging(self):
         if not self.logger.is_logging:
-            # Start logging
             file_path = filedialog.asksaveasfilename(
                 defaultextension=".txt",
                 filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
@@ -331,7 +503,6 @@ class AdvancedSerialMonitor:
                 else:
                     messagebox.showerror("Logging Error", f"Failed to start logging: {msg}")
         else:
-            # Stop logging
             self.logger.close()
             self.logging_button.config(text="📝 Start Logging")
             messagebox.showinfo("Logging Stopped", "Data logging has been stopped")
@@ -342,34 +513,33 @@ class AdvancedSerialMonitor:
             self.is_plotting_paused = True
             self.pause_button.config(state="disabled")
             self.resume_button.config(state="normal")
-            
-            # Create an empty buffer for collecting data while paused
             self.buffered_data = []
     
     def resume_plotting(self):
         if self.is_plotting_paused:
-            # Process any buffered data first
-            # Here we'll just restart the animation as we'll handle the buffered data in update_plot
             self.is_plotting_paused = False
             
-            # Restart animation
             interval = self.plot_settings['update_interval'].get()
             if self.plot_windows:
                 first_channel = list(self.plot_windows.keys())[0]
                 fig = self.plot_windows[first_channel]['figure']
                 
+
+                for channel_data in self.plot_windows.values():
+                    channel_data['canvas'].draw_idle()
+                
                 self.anim = animation.FuncAnimation(
                     fig, 
                     self.update_plot, 
                     interval=interval,
+                    blit=True,
                     cache_frame_data=False
                 )
-                
-                for channel_data in self.plot_windows.values():
-                    channel_data['canvas'].draw()
             
             self.pause_button.config(state="normal")
             self.resume_button.config(state="disabled")
+
+
     
     def get_available_ports(self):
         return [port.device for port in serial.tools.list_ports.comports()]
@@ -413,7 +583,6 @@ class AdvancedSerialMonitor:
                 self.serial_connection.close()
                 self.serial_connection = None
                 
-                # Close the logger if it's open
                 if self.logger.is_logging:
                     self.logger.close()
                     self.logging_button.config(text="📝 Start Logging")
@@ -441,7 +610,7 @@ class AdvancedSerialMonitor:
             return
         
         try:
-            success = self.serial_connection.send_channel_config("<",":",channel,":", method,":", float(value),":",">")
+            success = self.serial_connection.send_channel_config(channel, method, float(value))
             if success:
                 messagebox.showinfo("Success", f"{channel} configuration sent successfully!")
             else:
@@ -453,11 +622,27 @@ class AdvancedSerialMonitor:
         pass
     
     def start_plotting(self):
+        interval = self.plot_settings['update_interval'].get()
+        
+        if self.plot_windows:
+            first_channel = list(self.plot_windows.keys())[0]
+            fig = self.plot_windows[first_channel]['figure']
+            self.schedule_memory_cleanup()
+            
+            self.anim = animation.FuncAnimation(
+                fig, 
+                self.update_plot, 
+                interval=interval,
+                cache_frame_data=False  
+            )
+            
+            for channel_data in self.plot_windows.values():
+                channel_data['canvas'].draw()
         for channel_data in list(self.plot_windows.values()):
             plt.close(channel_data['figure'])
         self.plot_windows.clear()
         
-        if self.anim:
+        if self.anim is not None and self.anim.event_source is not None:
             self.anim.event_source.stop()
         
         if not self.serial_connection:
@@ -561,7 +746,6 @@ class AdvancedSerialMonitor:
             fig.canvas.draw()
             fig.canvas.flush_events()
         
-        # Reset pause/resume buttons
         self.pause_button.config(state="normal")
         self.resume_button.config(state="disabled")
         self.is_plotting_paused = False
@@ -569,6 +753,39 @@ class AdvancedSerialMonitor:
 
         self.start_animation()
     
+    def schedule_memory_cleanup(self):
+        self.root.after(self.cleanup_interval, self.perform_memory_cleanup)
+    
+    def perform_memory_cleanup(self):
+        try:
+            active_channels = [ch for ch, var in self.channel_vars.items() if var.get()]
+            
+            for channel in list(self.data_buffer.keys()):
+                if channel not in active_channels:
+                    self.data_buffer[channel] = {}
+            
+
+            for channel in active_channels:
+                for metric_key in list(self.data_buffer.get(channel, {}).keys()):
+                    buffer = self.data_buffer[channel][metric_key]
+                    if len(buffer.get('x', [])) > self.MAX_POINTS:
+                        buffer['x'] = buffer['x'][-self.MAX_POINTS//2:]
+                        buffer['y'] = buffer['y'][-self.MAX_POINTS//2:]
+        
+            gc.collect()
+            
+            if self.plot_settings['auto_scale'].get():
+                for channel_data in self.plot_windows.values():
+                    for ax in channel_data['axes'].values():
+                        ax.relim()
+                        ax.autoscale_view()
+            
+
+            self.schedule_memory_cleanup()
+            
+        except Exception as e:
+            print(f"Error during memory cleanup: {e}")
+            self.schedule_memory_cleanup()
     def start_animation(self):
         interval = self.plot_settings['update_interval'].get()
         
@@ -592,114 +809,101 @@ class AdvancedSerialMonitor:
     def update_plot(self, frame):
         if not self.serial_connection:
             return []
-        
-        # Always get data whether plotting is paused or not
-        data = self.serial_connection.get_data()
-        
+
+        data = {}
+        if self.serial_connection.ser.in_waiting > 0:
+            data = self.serial_connection.get_data()
+
         if not data or not data.get('time'):
             return []
-        
+
         if self.start_time is None:
             self.start_time = data['time']
-        
+
         relative_time = data['time'] - self.start_time
-        
-        # Log data to file if logging is enabled
-        if self.logger.is_logging and data:
-            for metric_key in ['V', 'I', 'R', 'P']:
-                if metric_key in data:
-                    # Find which channels are active
-                    for channel in self.channel_vars.keys():
-                        if self.channel_vars[channel].get():
-                            # Check if this metric is being plotted for this channel
-                            metric_name = next((m for m, k in self.metric_keys.items() if k == metric_key), None)
-                            if metric_name and channel in self.plot_configurations:
-                                if metric_name in self.plot_configurations[channel] and self.plot_configurations[channel][metric_name].get():
-                                    self.logger.log_data_point(relative_time, channel, metric_key, data[metric_key])
-        
-        # If plotting is paused, store the data but don't update plots
+
+        if self.logger.is_logging:
+            for ch in ["CH1", "CH2", "CH3"]:
+                if ch in data:
+                    for key in ['V', 'I', 'R', 'P']:
+                        if self.channel_vars[ch].get():
+                            metric_name = next((m for m, k in self.metric_keys.items() if k == key), None)
+                            if metric_name and self.plot_configurations[ch][metric_name].get():
+                                self.logger.log_data_point(relative_time, ch, key, data[ch][key])
+
         if self.is_plotting_paused:
-            # Store the data for later when we resume
             self.buffered_data.append((relative_time, data))
             return []
-        
-        lines_updated = []
-        
-        # Process any buffered data first if we just resumed
+
         if self.buffered_data:
-            for buffered_time, buffered_data in self.buffered_data:
-                self.update_data_buffers(buffered_time, buffered_data)
-            self.buffered_data = []  # Clear the buffer
-        
-        # Update with current data
+            for t, d in self.buffered_data:
+                self.update_data_buffers(t, d)
+            self.buffered_data = []
+
+
         self.update_data_buffers(relative_time, data)
+
+        updated_lines = []
+
+        for channel, win in self.plot_windows.items():
+            for metric_key, line in win['lines'].items():
+                buf = self.data_buffer.get(channel, {}).get(metric_key, {'x': [], 'y': []})
+                x_data, y_data = buf['x'], buf['y']
+                line.set_data(x_data, y_data)
+                updated_lines.append(line)
+
+                if self.plot_settings['auto_scale'].get():
+                    ax = win['axes'][metric_key]
+                    ax.relim()
+                    ax.autoscale_view()
+
+                    if y_data:
+                        ymax = max(y_data)
+                        margin = 0.1 * ymax if ymax != 0 else 1.0
+                        ax.set_ylim(0, ymax + margin)
+
+        return updated_lines
+
         
-        # Update plot lines
-        for channel, channel_data in list(self.plot_windows.items()):
-            for metric_key, line in channel_data['lines'].items():
-                if metric_key in data and channel in self.data_buffer and metric_key in self.data_buffer[channel]:
-                    buffer = self.data_buffer[channel][metric_key]
-                    line.set_data(buffer['x'], buffer['y'])
-                    lines_updated.append(line)
-                    
-                    ax = channel_data['axes'][metric_key]
-                    
-                    x_min = min(buffer['x']) if buffer['x'] else 0
-                    x_max = max(buffer['x']) if buffer['x'] else 1
-                    if x_min == x_max:
-                        x_max += 1
-                    ax.set_xlim(x_min, x_max)
-                    
-                    if self.plot_settings['auto_scale'].get():
-                        if buffer['y']:
-                            min_y = min(buffer['y'])
-                            max_y = max(buffer['y'])
-                            y_range = max(0.1, max_y - min_y)
-                            ax.set_ylim(min_y - 0.1 * y_range, max_y + 0.1 * y_range)
-                    
-                    ax.grid(self.plot_settings['grid_enabled'].get())
-            
-            try:
-                channel_data['canvas'].draw_idle()
-            except Exception as e:
-                print(f"Plot update error: {e}")
-        
-        return lines_updated
-    
     def update_data_buffers(self, relative_time, data):
-        """Update data buffers for all active channels and metrics"""
         for channel, channel_data in list(self.plot_windows.items()):
-            for metric_key in channel_data['lines'].keys():
-                if metric_key in data:
-                    buffer = self.data_buffer[channel][metric_key]
-                    buffer['x'].append(relative_time)
-                    buffer['y'].append(data[metric_key])
-                    
-                    if len(buffer['x']) > self.MAX_POINTS:
-                        buffer['x'] = buffer['x'][-self.MAX_POINTS:]
-                        buffer['y'] = buffer['y'][-self.MAX_POINTS:]
-    
+            if channel in data:
+                for metric_key in channel_data['lines'].keys():
+                    if metric_key in data[channel]:
+
+                        if channel not in self.data_buffer:
+                            self.data_buffer[channel] = {}
+                        
+                        if metric_key not in self.data_buffer[channel]:
+                            self.data_buffer[channel][metric_key] = {'x': [], 'y': []}
+                        
+                        buffer = self.data_buffer[channel][metric_key]
+                        buffer['x'].append(relative_time)
+                        buffer['y'].append(data[channel][metric_key])
+                        
+                        if len(buffer['x']) > self.MAX_POINTS:
+                            buffer['x'] = buffer['x'][-self.MAX_POINTS:]
+                            buffer['y'] = buffer['y'][-self.MAX_POINTS:]
     def on_plot_window_close(self, window, figure):
         plt.close(figure)
         window.destroy()
-        
 
         for channel, data in list(self.plot_windows.items()):
             if data['window'] == window:
                 del self.plot_windows[channel]
+                if channel in self.data_buffer:
+                    self.data_buffer[channel] = {}  
                 break
-        
 
         if self.anim is not None and self.anim.event_source is not None:
             self.anim.event_source.stop()
-        
-        # Disable pause/resume buttons if no plot windows remain
+
         if not self.plot_windows:
             self.pause_button.config(state="disabled")
             self.resume_button.config(state="disabled")
+
     
     def close(self):
-        # Close the logger if it's active
         if self.logger.is_logging:
             self.logger.close()
 
@@ -710,10 +914,10 @@ class AdvancedSerialMonitor:
             except Exception as e:
                 print(f"Error closing serial port: {e}")
         
+
         if hasattr(self, 'anim') and self.anim and self.anim.event_source is not None:
             self.anim.event_source.stop()
         
-
         for channel_data in list(self.plot_windows.values()):
             try:
                 plt.close(channel_data['figure'])
@@ -722,6 +926,12 @@ class AdvancedSerialMonitor:
                 print(f"Error closing plot window: {e}")
         
 
+        self.data_buffer.clear()
+        self.plot_windows.clear()
+        
+        import gc
+        gc.collect()
+        
         self.root.destroy()
 
 def main():
