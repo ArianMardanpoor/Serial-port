@@ -116,8 +116,7 @@ class SerialCommunicationHandler:
                         
 
                         str_line = raw_data.decode('utf-8', errors="ignore").strip()
-                        print(f"Received data: {str_line}")
-                        
+  
                         if not str_line:
                             continue  
                         
@@ -160,7 +159,7 @@ class SerialCommunicationHandler:
                             result["CH1"]["R"] = result["CH1"]["V"] / result["CH1"]["I"]
                         else:
                             result["CH1"]["R"] = 0
-                        result["CH1"]["P"] = result["CH1"]["V"] * result["CH1"]["I"]
+                        result["CH1"]["P"] = result["CH1"]["V"] * result["CH1"]["I"] *1000
                             
                         try:
                             if len(raw_data) > 8:
@@ -199,7 +198,7 @@ class SerialCommunicationHandler:
                             result["CH2"]["R"] = result["CH2"]["V"] / result["CH2"]["I"]
                         else:
                             result["CH2"]["R"] = 0
-                        result["CH2"]["P"] = result["CH2"]["V"] * result["CH2"]["I"]
+                        result["CH2"]["P"] = result["CH2"]["V"] * result["CH2"]["I"] *1000
                             
                         try:
                             if len(raw_data) > 18:
@@ -238,7 +237,7 @@ class SerialCommunicationHandler:
                             result["CH3"]["R"] = result["CH3"]["V"] / result["CH3"]["I"]
                         else:
                             result["CH3"]["R"] = 0
-                        result["CH3"]["P"] = result["CH3"]["V"] * result["CH3"]["I"]
+                        result["CH3"]["P"] = result["CH3"]["V"] * result["CH3"]["I"] *1000
                             
                         try:
                             if len(raw_data) > 28:
@@ -346,10 +345,10 @@ class AdvancedSerialMonitor:
             'Power': 'P'
         }
         self.metric_properties = {
-            'Voltage': {'color': 'blue', 'ylabel': 'Voltage (V)'},
-            'Current': {'color': 'red', 'ylabel': 'Current (A)'},
+            'Voltage': {'color': 'blue', 'ylabel': 'Voltage (mV)'},
+            'Current': {'color': 'red', 'ylabel': 'Current (mA)'},
             'Resistance': {'color': 'green', 'ylabel': 'Resistance (Ω)'},
-            'Power': {'color': 'purple', 'ylabel': 'Power (W)'}
+            'Power': {'color': 'purple', 'ylabel': 'Power (mW)'}
         }
         self.data_buffer = {f'CH{i}': {} for i in range(1, 4)}
         self.MAX_POINTS = 200 
