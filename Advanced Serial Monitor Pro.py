@@ -61,13 +61,13 @@ class SerialCommunicationHandler:
             method_map = {'I': 1, 'R': 2, 'P': 3}
 
             if channel not in channel_map or method not in method_map:
-                print(f"[ERROR] Invalid channel or method: {channel}, {method}")
+                messagebox.showinfo(f"[ERROR] Invalid channel or method: {channel}, {method}")
                 return False
 
             try:
                 value = float(value)
             except ValueError:
-                print("[ERROR] Value is not a valid float")
+                messagebox.showinfo("[ERROR] Value is not a valid float")
                 return False
 
             int_value = max(0, min(int(value), 65535))
@@ -86,10 +86,8 @@ class SerialCommunicationHandler:
                 ord('>')
             ])
 
-            print(f"[DEBUG] Sending packet: {list(packet)}") 
 
             self.ser.write(packet)
-            print(packet)
             return True
 
         except Exception as e:
@@ -159,7 +157,7 @@ class SerialCommunicationHandler:
                             result["CH1"]["R"] = result["CH1"]["V"] / result["CH1"]["I"]
                         else:
                             result["CH1"]["R"] = 0
-                        result["CH1"]["P"] = result["CH1"]["V"] * result["CH1"]["I"] *1000
+                        result["CH1"]["P"] = result["CH1"]["V"] * result["CH1"]["I"] / 1000
                             
                         try:
                             if len(raw_data) > 8:
@@ -198,7 +196,7 @@ class SerialCommunicationHandler:
                             result["CH2"]["R"] = result["CH2"]["V"] / result["CH2"]["I"]
                         else:
                             result["CH2"]["R"] = 0
-                        result["CH2"]["P"] = result["CH2"]["V"] * result["CH2"]["I"] *1000
+                        result["CH2"]["P"] = result["CH2"]["V"] * result["CH2"]["I"] / 1000
                             
                         try:
                             if len(raw_data) > 18:
@@ -237,7 +235,7 @@ class SerialCommunicationHandler:
                             result["CH3"]["R"] = result["CH3"]["V"] / result["CH3"]["I"]
                         else:
                             result["CH3"]["R"] = 0
-                        result["CH3"]["P"] = result["CH3"]["V"] * result["CH3"]["I"] *1000
+                        result["CH3"]["P"] = result["CH3"]["V"] * result["CH3"]["I"] / 1000
                             
                         try:
                             if len(raw_data) > 28:
