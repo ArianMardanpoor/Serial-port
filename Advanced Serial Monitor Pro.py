@@ -5,6 +5,7 @@ import serial.tools.list_ports
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import matplotlib.animation as animation
+import matplotlib.ticker as mticker
 import numpy as np  
 import time
 import ttkbootstrap as tbs
@@ -135,6 +136,8 @@ class SerialCommunicationHandler:
                         try:
                             if len(raw_data) > 3:
                                 V1_val = raw_data[2] * 256 + raw_data[3]
+                                if V1_val > 30000:
+                                    V1_val = 30000
                                 result["CH1"]["V"] = V1_val
                         except (IndexError, TypeError) as e:
                             print(f"Error reading CH1 V: {e}")
@@ -142,6 +145,8 @@ class SerialCommunicationHandler:
                         try:
                             if len(raw_data) > 6:
                                 I1_val = raw_data[5] * 256 + raw_data[6]
+                                if I1_val > 1000:
+                                    I1_val = 1000
                                 result["CH1"]["I"] = I1_val
                         except (IndexError, TypeError) as e:
                             print(f"Error reading CH1 I: {e}")
@@ -156,24 +161,15 @@ class SerialCommunicationHandler:
                         if result["CH1"]["I"] != 0:
                             result["CH1"]["R"] = result["CH1"]["V"] / result["CH1"]["I"]
                         else:
-                            result["CH1"]["R"] = 0
+                            result["CH1"]["R"] = 10000
                         result["CH1"]["P"] = result["CH1"]["V"] * result["CH1"]["I"] / 1000
                             
-                        try:
-                            if len(raw_data) > 8:
-                                mode = raw_data[8]
-                                if mode == 1:
-                                    result["CH1"]["I"] = G1
-                                elif mode == 2:
-                                    result["CH1"]["R"] = G1
-                                elif mode == 3:
-                                    result["CH1"]["P"] = G1
-                        except (IndexError, TypeError) as e:
-                            print(f"Error reading CH1 mode: {e}")
                         
                         try:
                             if len(raw_data) > 13:
                                 V2_val = raw_data[12] * 256 + raw_data[13]
+                                if V2_val > 30000:
+                                    V2_val = 30000
                                 result["CH2"]["V"] = V2_val
                         except (IndexError, TypeError) as e:
                             print(f"Error reading CH2 V: {e}")
@@ -181,6 +177,8 @@ class SerialCommunicationHandler:
                         try:
                             if len(raw_data) > 16:
                                 I2_val = raw_data[15] * 256 + raw_data[16]
+                                if I2_val > 1000:
+                                    I2_val = 1000
                                 result["CH2"]["I"] = I2_val
                         except (IndexError, TypeError) as e:
                             print(f"Error reading CH2 I: {e}")
@@ -195,24 +193,15 @@ class SerialCommunicationHandler:
                         if result["CH2"]["I"] != 0:
                             result["CH2"]["R"] = result["CH2"]["V"] / result["CH2"]["I"]
                         else:
-                            result["CH2"]["R"] = 0
+                            result["CH2"]["R"] = 10000
                         result["CH2"]["P"] = result["CH2"]["V"] * result["CH2"]["I"] / 1000
                             
-                        try:
-                            if len(raw_data) > 18:
-                                mode = raw_data[18]
-                                if mode == 1:
-                                    result["CH2"]["I"] = G2
-                                elif mode == 2:
-                                    result["CH2"]["R"] = G2
-                                elif mode == 3:
-                                    result["CH2"]["P"] = G2
-                        except (IndexError, TypeError) as e:
-                            print(f"Error reading CH2 mode: {e}")
                         
                         try:
                             if len(raw_data) > 23:
                                 V3_val = raw_data[22] * 256 + raw_data[23] 
+                                if V3_val > 30000:
+                                    V3_val = 30000
                                 result["CH3"]["V"] = V3_val
                         except (IndexError, TypeError) as e:
                             print(f"Error reading CH3 V: {e}")
@@ -220,6 +209,8 @@ class SerialCommunicationHandler:
                         try:
                             if len(raw_data) > 26:
                                 I3_val = raw_data[25] * 256 + raw_data[26]
+                                if I3_val > 1000:
+                                    I3_val = 1000
                                 result["CH3"]["I"] = I3_val
                         except (IndexError, TypeError) as e:
                             print(f"Error reading CH3 I: {e}")
@@ -234,20 +225,9 @@ class SerialCommunicationHandler:
                         if result["CH3"]["I"] != 0:
                             result["CH3"]["R"] = result["CH3"]["V"] / result["CH3"]["I"]
                         else:
-                            result["CH3"]["R"] = 0
+                            result["CH3"]["R"] = 10000
                         result["CH3"]["P"] = result["CH3"]["V"] * result["CH3"]["I"] / 1000
                             
-                        try:
-                            if len(raw_data) > 28:
-                                mode = raw_data[28]
-                                if mode == 1:
-                                    result["CH3"]["I"] = G3
-                                elif mode == 2:
-                                    result["CH3"]["R"] = G3 
-                                elif mode == 3:
-                                    result["CH3"]["P"] = G3
-                        except (IndexError, TypeError) as e:
-                            print(f"Error reading CH3 mode: {e}")
                     else:
                         break
                         
@@ -355,8 +335,14 @@ class AdvancedSerialMonitor:
         self.start_time = None
         self.logger = Logger()
         self.is_plotting_paused = False
+        self.metric_checkbuttons = {}
         self.buffered_data = []
-        
+        self.metric_y_ranges = {
+            'I': (0, 1000),      
+            'V': (0, 30000),   
+            'P': (0, 30000),  
+            'R': (0, 10000)      
+            }
         self.setup_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
     
@@ -381,7 +367,7 @@ class AdvancedSerialMonitor:
         self.disconnect_button = ttk.Button(port_frame, text="🔌 Disconnect", command=self.disconnect_serial, state="disabled")
         self.disconnect_button.grid(row=0, column=4)
         
-        # Add logging button
+
         self.logging_button = ttk.Button(port_frame, text="📝 Start Logging", command=self.toggle_logging)
         self.logging_button.grid(row=0, column=5, padx=5)
 
@@ -390,24 +376,35 @@ class AdvancedSerialMonitor:
         
 
         for idx, (ch_name, ch_var) in enumerate(self.channel_vars.items()):
+            def toggle_channel(ch=ch_name):
+                for other_ch, other_var in self.channel_vars.items():
+                    if other_ch != ch:
+                        other_var.set(False)
+                self.toggle_channel_config(ch)
+
             ttk.Checkbutton(
                 channel_frame, 
                 text=ch_name, 
                 variable=ch_var, 
-                command=lambda ch=ch_name: self.toggle_channel_config(ch)
+                command=toggle_channel
             ).grid(row=idx, column=0, sticky='w')
-            
 
             self.plot_configurations[ch_name] = {
                 metric: tk.BooleanVar(value=False) for metric in self.metrics
             }
             
+            self.metric_checkbuttons[ch_name] = {}
+
             for j, metric in enumerate(self.metrics):
-                ttk.Checkbutton(
+                cb = ttk.Checkbutton(
                     channel_frame, 
                     text=metric, 
                     variable=self.plot_configurations[ch_name][metric]
-                ).grid(row=idx, column=j+1, sticky='w')
+                )
+                cb.grid(row=idx, column=j+1, sticky='w')
+                cb.configure(state='disabled')  
+                self.metric_checkbuttons[ch_name][metric] = cb
+
             
 
             config_frame = ttk.LabelFrame(channel_frame, text=f"{ch_name} Settings", padding=5)
@@ -615,8 +612,12 @@ class AdvancedSerialMonitor:
         except ValueError:
             messagebox.showerror("Error", "Invalid value!")
     
-    def toggle_channel_config(self, channel):
-        pass
+    def toggle_channel_config(self, selected_channel):
+        for ch_name in self.channel_vars:
+            is_selected = (ch_name == selected_channel and self.channel_vars[ch_name].get())
+            for metric in self.metrics:
+                state = 'normal' if is_selected else 'disabled'
+                self.metric_checkbuttons[ch_name][metric].configure(state=state)
     
     def start_plotting(self):
         interval = self.plot_settings['update_interval'].get()
@@ -749,7 +750,7 @@ class AdvancedSerialMonitor:
         self.buffered_data = []
 
         self.start_animation()
-    
+
     def schedule_memory_cleanup(self):
         self.root.after(self.cleanup_interval, self.perform_memory_cleanup)
     
@@ -837,7 +838,6 @@ class AdvancedSerialMonitor:
                 self.update_data_buffers(t, d)
             self.buffered_data = []
 
-
         self.update_data_buffers(relative_time, data)
 
         updated_lines = []
@@ -849,19 +849,20 @@ class AdvancedSerialMonitor:
                 line.set_data(x_data, y_data)
                 updated_lines.append(line)
 
-                if self.plot_settings['auto_scale'].get():
-                    ax = win['axes'][metric_key]
-                    ax.relim()
-                    ax.autoscale_view()
+                ax = win['axes'][metric_key]
+                ax.relim()
+                ax.autoscale_view()
 
-                    if y_data:
-                        ymax = max(y_data)
-                        margin = 0.1 * ymax if ymax != 0 else 1.0
-                        ax.set_ylim(0, ymax + margin)
+
+                if metric_key == 'I':
+                    ax.set_ylim(-10, 1010)
+                elif metric_key in ['V', 'P']:
+                    ax.set_ylim(-300, 30300)
+                elif metric_key == 'R':
+                    ax.set_ylim(-100, 10100)
 
         return updated_lines
 
-        
     def update_data_buffers(self, relative_time, data):
         for channel, channel_data in list(self.plot_windows.items()):
             if channel in data:
